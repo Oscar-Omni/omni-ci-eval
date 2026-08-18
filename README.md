@@ -61,7 +61,7 @@ You need the prompt sets you want to run already set up in Omni before wiring th
 
 3. Open `omni_eval.py` and edit the `PROMPT_SETS` list to the prompt sets you already have set up in Omni. This isn't a repo variable, it's edited directly in the script.
 4. Open `omni-ai-eval.yml` and update the `paths` filter under the (commented out) `pull_request` trigger to match where your model YAML lives.
-5. The workflow ships with only `workflow_dispatch` enabled, so you can test it manually first. Once you're happy, uncomment the `pull_request` trigger block to have it run automatically on PRs.
+5. The workflow ships with only `workflow_dispatch` enabled, so you can test it manually first: go to Actions, run "Omni AI Eval," and give it the name of an existing Omni model branch to evaluate against main. Once you're happy, uncomment the `pull_request` trigger block to have it run automatically on PRs, where the branch is picked up from the PR itself.
 
 That's it, no other changes needed to adopt it.
 
