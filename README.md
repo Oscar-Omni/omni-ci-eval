@@ -10,6 +10,39 @@ The check fails if any prompt regresses (passed on main, failed on the branch), 
 
 Only up to 2 Omni eval runs can be in progress org wide, so prompt sets run one at a time.
 
+## Example output
+
+This is what lands as a PR comment once it's wired up:
+
+> ### 🔴 Omni AI eval: 1 prompt(s) regressed on this branch
+>
+> branch `add-churn-segment` (`a1b2c3d`) vs `main` · 1 prompt set
+>
+> ### Core revenue prompts
+>
+> Prompt set `core-revenue`
+>
+> | | main | branch | Δ |
+> |---|---|---|---|
+> | **Accuracy** | 87.5% (7/8) | 75.0% (6/8) | -12.5 pts |
+> | **LLM spend (USD)** | $0.0412 | $0.0447 | +0.0035 (+8%) |
+>
+> #### 🔴 Regressions (1)
+> - What was total revenue by region last quarter? — _judge marked branch answer incomplete_
+>
+> #### 🟢 Improvements (1)
+> - Which customers churned in the last 30 days?
+>
+> <details><summary>Per-prompt detail</summary>
+>
+> table of every prompt with main/branch score, cost, query count and timing
+>
+> </details>
+>
+> _This check **fails on any regression** (a prompt that passed on `main` but failed on the branch), in any prompt set. Cost changes never gate._
+
+If nothing regressed you just get the green headline and the accuracy and spend table, no regressions or improvements sections.
+
 ## Prerequisite
 
 You need the prompt sets you want to run already set up in Omni before wiring this up. The workflow evaluates existing prompt sets, it doesn't create them.
