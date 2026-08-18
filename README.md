@@ -10,6 +10,16 @@ The check fails if any prompt regresses (passed on main, failed on the branch), 
 
 Only up to 2 Omni eval runs can be in progress org wide, so prompt sets run one at a time.
 
+## What it talks to
+
+Everything goes to `OMNI_BASE_URL` (your org's Omni API base, e.g. `https://<your org>.omniapp.co/api`), authenticated with `OMNI_API_KEY` as a bearer token. Three endpoints, all Omni's public v1 API:
+
+* `GET /v1/models` — paged through to find the model branch matching the PR's git branch name
+* `POST /v1/ai/eval/runs` — starts an eval run for a prompt set, once against `main` and once against that branch
+* `GET /v1/ai/eval/runs/{id}` — polled until both runs are complete and every prompt is scored
+
+No other services or endpoints are involved. Nothing is sent anywhere outside your Omni org and GitHub's own PR comment API.
+
 ## Example output
 
 This is what lands as a PR comment once it's wired up:
