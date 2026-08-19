@@ -1,8 +1,8 @@
-# dashboard gate, Omni PR
+# omni change impact check
 
-A GitHub Actions workflow that gates an Omni model PR on Omni's schema and content validators, so a model edit can't silently break a dashboard you've labelled verified. This is a template, part of the [omni-ci-workflows](../../README.md) collection, meant to be copied into your own Omni repo rather than run here.
+A GitHub Actions workflow that checks an Omni model PR against Omni's schema and content validators, so a model edit can't silently break a dashboard you've labelled verified. This is a template, part of the [omni-ci-workflows](../../README.md) collection, meant to be copied into your own Omni repo rather than run here.
 
-If you're gating an upstream dbt change instead of an Omni model PR, see [dashboard-gate-dbt-trigger](../dashboard-gate-dbt-trigger/README.md), it's a different trigger shape (cross repo dispatch, no Omni PR at all) so it lives as its own workflow.
+If you're checking an upstream dbt change instead of an Omni model PR, see [dbt-change-impact-check](../dbt-change-impact-check/README.md), it's a different trigger shape (cross repo dispatch, no Omni PR at all) so it lives as its own workflow.
 
 ## What it does
 

@@ -5,9 +5,9 @@ A collection of GitHub Actions workflow templates for Omni repos. Each folder un
 ## Workflows
 
 * [omni-ai-eval](workflows/omni-ai-eval/README.md), runs an Omni AI eval on PRs touching model YAML, regression tests a prompt set between the PR's Omni model branch and main, and posts the result as a PR comment.
-* Dashboard gate, gates a PR on Omni's schema and content validators so a model edit or an upstream dbt change can't silently break a dashboard you've labelled verified. Split into two workflows since the trigger shape differs:
-  * [dashboard-gate-omni-pr](workflows/dashboard-gate-omni-pr/README.md), an Omni model PR, gated against production, a dev connection environment, or a dev dbt environment (pick one of three variants).
-  * [dashboard-gate-dbt-trigger](workflows/dashboard-gate-dbt-trigger/README.md), an upstream dbt PR, which dispatches to the Omni repo to gate against the schema the dbt PR built.
+* Impact checks, check a PR against Omni's schema and content validators so a model edit or an upstream dbt change can't silently break a dashboard you've labelled verified. Split into two workflows since the trigger shape differs:
+  * [omni-change-impact-check](workflows/omni-change-impact-check/README.md), an Omni model PR, checked against production, a dev connection environment, or a dev dbt environment (pick one of three variants).
+  * [dbt-change-impact-check](workflows/dbt-change-impact-check/README.md), an upstream dbt PR, which dispatches to the Omni repo to check against the schema the dbt PR built.
 
 ## Using a workflow from here
 

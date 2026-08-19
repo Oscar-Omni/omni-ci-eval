@@ -1,12 +1,12 @@
-# dashboard gate, dbt trigger
+# dbt change impact check
 
-A pair of GitHub Actions workflows that gate a dbt PR on Omni's schema and content validators, so an upstream data change can't silently break a dashboard you've labelled verified. These are templates, part of the [omni-ci-workflows](../../README.md) collection, meant to be copied into your dbt repo and your Omni repo rather than run here.
+A pair of GitHub Actions workflows that check a dbt PR against Omni's schema and content validators, so an upstream data change can't silently break a dashboard you've labelled verified. These are templates, part of the [omni-ci-workflows](../../README.md) collection, meant to be copied into your dbt repo and your Omni repo rather than run here.
 
-Unlike [dashboard-gate-omni-pr](../dashboard-gate-omni-pr/README.md), there's no Omni PR here at all, the change originates in the dbt repo. That's a different trigger shape (a cross repo dispatch instead of a plain `pull_request`), which is why this is its own workflow rather than another variant of that one.
+Unlike [omni-change-impact-check](../omni-change-impact-check/README.md), there's no Omni PR here at all, the change originates in the dbt repo. That's a different trigger shape (a cross repo dispatch instead of a plain `pull_request`), which is why this is its own workflow rather than another variant of that one.
 
 ## What it does
 
-On a dbt PR, the dbt repo builds a dev schema and dispatches to the Omni repo. The Omni repo creates an ephemeral model branch, points it at the dbt environment named in the dispatch payload, refreshes its schema, runs semantic validation, then runs content validation against every dashboard labelled verified. It deletes the branch, then posts the result back onto the dbt PR's commit as the `omni-dashboard-gate` status check.
+On a dbt PR, the dbt repo builds a dev schema and dispatches to the Omni repo. The Omni repo creates an ephemeral model branch, points it at the dbt environment named in the dispatch payload, refreshes its schema, runs semantic validation, then runs content validation against every dashboard labelled verified. It deletes the branch, then posts the result back onto the dbt PR's commit as the `dbt-change-impact-check` status check.
 
 ## Prerequisites
 
@@ -37,7 +37,7 @@ Add these under Settings, Secrets and variables, Actions.
 * `dbt-repo.yml`, copy to `.github/workflows/dbt-ci.yml` in the dbt repo
 * `omni-repo.yml`, copy to `.github/workflows/validate-from-dbt.yml` in the Omni repo
 
-On the dbt repo, make `omni-dashboard-gate` a required status check on `main`, so the PR waits for Omni to report.
+On the dbt repo, make `dbt-change-impact-check` a required status check on `main`, so the PR waits for Omni to report.
 
 ### Simpler alternative, skip the dispatch and callback
 

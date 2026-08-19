@@ -136,4 +136,4 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.DBT_STATUS_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.event.client_payload.dbt_repo }}/statuses/${{ github.event.client_payload.sha }}" \
-            -d "{\"state\":\"$STATE\",\"context\":\"omni-dashboard-gate\",\"description\":\"Omni dashboard validation: $STATE\",\"target_url\":\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+            -d "{\"state\":\"$STATE\",\"context\":\"dbt-change-impact-check\",\"description\":\"Omni dashboard validation: $STATE\",\"target_url\":\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
