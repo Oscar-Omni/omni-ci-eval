@@ -1,20 +1,31 @@
 name: Validate dashboards from dbt change
 
-# Omni repo side of the dbt-triggered dashboard gate. Triggered by the dbt
-# repo's repository_dispatch. There is no Omni PR here, so this creates an
-# ephemeral branch, points it at the dbt environment named in the payload,
-# validates it, deletes the branch, then posts success or failure back onto
-# the dbt PR's commit. See dbt-repo.yml for the other half, which lives in
-# your dbt repo.
+# Omni repo side of the dbt change impact check. Triggered by the dbt repo's
+# repository_dispatch. There is no Omni PR here, so validate_from_dbt.py
+# creates an ephemeral branch, points it at the dbt environment named in the
+# payload, validates it, deletes the branch, then posts success or failure
+# back onto the dbt PR's commit. See dbt-repo.yml for the other half, which
+# lives in your dbt repo. All the logic lives in validate_from_dbt.py, this
+# file just wires up secrets and runs it.
 #
-# Commit this in your Omni repo at .github/workflows/validate-from-dbt.yml
+# Commit this in your Omni repo at .github/workflows/validate-from-dbt.yml,
+# and validate_from_dbt.py at .github/scripts/validate_from_dbt.py.
+#
+# Required repo secrets (Settings > Secrets and variables > Actions > Secrets):
+#   OMNI_API_KEY             Organization API key (the script reads it as OMNI_API_TOKEN)
+#   OMNI_BASE_URL            e.g. https://<your org>.omniapp.co/api
+#   OMNI_BASE_MODEL_ID       Id of the production shared model the ephemeral branch forks from
+#   OMNI_CONNECTION_ID       Connection id, from the URL when editing the connection
+#   OMNI_VALIDATOR_USER_ID   Id of the user content validation is scoped to (optional,
+#                            content validation is skipped if unset)
+#   DBT_STATUS_TOKEN         PAT with commit status write on the dbt repo, posts the result back
 
 on:
   repository_dispatch:
     types: [dbt-change-validation]
 
 concurrency:
-  group: omni-validate-from-dbt
+  group: dbt-change-impact-check-validate
   cancel-in-progress: false
 
 jobs:
@@ -23,13 +34,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
       - name: Install Omni CLI
         run: |
           curl -fsSL https://raw.githubusercontent.com/exploreomni/cli/main/install.sh | sh
           echo "$HOME/.omni/bin" >> "$GITHUB_PATH"
 
       - name: Validate against the dbt change
-        id: validate
         env:
           # The CLI reads OMNI_API_TOKEN / OMNI_BASE_URL, not OMNI_API_KEY.
           OMNI_API_TOKEN: ${{ secrets.OMNI_API_KEY }}
@@ -39,101 +53,7 @@ jobs:
           USER_ID: ${{ secrets.OMNI_VALIDATOR_USER_ID }}
           DBT_ENV_NAME: ${{ github.event.client_payload.dbt_env }}
           BRANCH_NAME: ci-dbt-${{ github.run_id }}
-        run: |
-          set -euo pipefail
-
-          # --- 1. Create an ephemeral branch (no Omni PR exists); clean up on exit
-          echo "[info] Creating ephemeral branch '$BRANCH_NAME' off $BASE_MODEL_ID..."
-          CREATE_OUT=$(omni models create-branch "$BASE_MODEL_ID" --name "$BRANCH_NAME" --format json)
-          BRANCH_MODEL_ID=$(echo "$CREATE_OUT" | jq -r '.model.id')
-          if [ -z "$BRANCH_MODEL_ID" ] || [ "$BRANCH_MODEL_ID" = "null" ]; then
-            echo "::error::create-branch did not return .model.id"
-            echo "$CREATE_OUT"
-            exit 1
-          fi
-          echo "[info] Branch model id: $BRANCH_MODEL_ID"
-          trap 'echo "[info] Cleaning up branch..."; omni models delete-branch "$BASE_MODEL_ID" "$BRANCH_NAME" || true' EXIT
-
-          # --- 2. Point the branch at the matching dbt environment ---------------
-          echo "[info] Resolving dbt environment '$DBT_ENV_NAME'..."
-          DBT_ENV_ID=$(curl -fsS -H "Authorization: Bearer $OMNI_API_TOKEN" \
-            "$OMNI_BASE_URL/api/v1/connections/$OMNI_CONNECTION_ID/dbt/environments" \
-            | jq -r --arg n "$DBT_ENV_NAME" '.[]? | select(.name==$n) | .id')
-          if [ -z "$DBT_ENV_ID" ] || [ "$DBT_ENV_ID" = "null" ]; then
-            echo "::error::dbt environment '$DBT_ENV_NAME' not found on connection $OMNI_CONNECTION_ID"
-            exit 1
-          fi
-          echo "[info] dbt environment id: $DBT_ENV_ID"
-          curl -fsS -X POST \
-            -H "Authorization: Bearer $OMNI_API_TOKEN" -H "Content-Type: application/json" \
-            "$OMNI_BASE_URL/api/v1/models/$BASE_MODEL_ID/branch/$BRANCH_NAME/dbt" \
-            -d "{\"dbt_environment_id\":\"$DBT_ENV_ID\"}" | jq . || true
-
-          # --- 3. Refresh schema (async; poll to COMPLETED) ----------------------
-          echo "[info] Refreshing schema..."
-          REFRESH_OUT=$(omni models refresh "$BASE_MODEL_ID" --branch-id "$BRANCH_MODEL_ID" --format json)
-          echo "$REFRESH_OUT" | jq .
-          JOB_ID=$(echo "$REFRESH_OUT" | jq -r '.jobId')
-          for i in $(seq 1 60); do
-            JST=$(omni models jobs-get-status "$JOB_ID" --format json)
-            S=$(echo "$JST" | jq -r '.status')
-            echo "[info] refresh job $JOB_ID: $S"
-            case "$S" in
-              COMPLETED) break ;;
-              FAILED) echo "::error::schema refresh job failed"; echo "$JST" | jq .; exit 1 ;;
-            esac
-            if [ "$i" -eq 60 ]; then
-              echo "::error::schema refresh did not finish within timeout"
-              exit 1
-            fi
-            sleep 5
-          done
-
-          # --- 4. Semantic validation ---------------------------------------------
-          # validate exits 0 even on hard errors, so parse the output and fail ourselves.
-          echo "[info] Running semantic model validation..."
-          VALIDATE_OUT=$(omni models validate "$BRANCH_MODEL_ID" --format json)
-          echo "$VALIDATE_OUT" | jq .
-          ERRORS=$(echo "$VALIDATE_OUT" | jq '[.[]? | select(.is_warning == false)] | length')
-          echo "[info] semantic validation: ${ERRORS} blocking issue(s)"
-          if [ "${ERRORS:-0}" -gt 0 ]; then
-            echo "::error::Semantic validation found ${ERRORS} blocking issue(s):"
-            echo "$VALIDATE_OUT" | jq -r '.[]? | select(.is_warning==false) | " - \(.yaml_path): \(.message)"'
-            exit 1
-          fi
-
-          # --- 5. Content validation: verified dashboards, user-scoped -----------
-          if [ -z "${USER_ID:-}" ] || [ "${USER_ID}" = "null" ]; then
-            echo "::warning::OMNI_VALIDATOR_USER_ID not set, skipping content validation."
-          else
-            VERIFIED_LABELS=$(omni labels list --format json \
-              | jq -r '[.labels[]? | select(.verified == true) | .name] | join(",")')
-            echo "[info] verified labels: ${VERIFIED_LABELS:-<none>}"
-            if [ -n "$VERIFIED_LABELS" ]; then
-              CONTENT_RESULT=$(omni models content-validator-get "$BASE_MODEL_ID" \
-                --branch-id "$BRANCH_MODEL_ID" --userid "$USER_ID" --labels "$VERIFIED_LABELS" --format json)
-              echo "$CONTENT_RESULT" | jq .
-              ISSUES=$(echo "$CONTENT_RESULT" \
-                | jq '[.content[]? | .queries_and_issues[]? | select((.issues|length) > 0)] | length')
-              echo "[info] content validation: ${ISSUES:-0} verified item(s) with issues"
-              if [ "${ISSUES:-0}" -gt 0 ]; then
-                echo "::error::Content validation failed: ${ISSUES} verified item(s) with issues"
-                exit 1
-              fi
-            else
-              echo "::warning::No verified labels found, nothing to content-validate."
-            fi
-          fi
-
-          echo "[ok] Validation passed."
-
-      # --- 6. Signal the result back to the dbt PR (always runs) ----------------
-      - name: Report status back to the dbt PR
-        if: always()
-        run: |
-          STATE=${{ steps.validate.outcome == 'success' && 'success' || 'failure' }}
-          curl -fsS -X POST \
-            -H "Authorization: Bearer ${{ secrets.DBT_STATUS_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.event.client_payload.dbt_repo }}/statuses/${{ github.event.client_payload.sha }}" \
-            -d "{\"state\":\"$STATE\",\"context\":\"dbt-change-impact-check\",\"description\":\"Omni dashboard validation: $STATE\",\"target_url\":\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+          DBT_STATUS_TOKEN: ${{ secrets.DBT_STATUS_TOKEN }}
+          DBT_REPO: ${{ github.event.client_payload.dbt_repo }}
+          DBT_SHA: ${{ github.event.client_payload.sha }}
+        run: python .github/scripts/validate_from_dbt.py

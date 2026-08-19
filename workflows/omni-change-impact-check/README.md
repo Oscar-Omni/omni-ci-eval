@@ -6,15 +6,15 @@ If you're checking an upstream dbt change instead of an Omni model PR, see [dbt-
 
 ## What it does
 
-On a pull request, `branchPerPullRequest` has already created a matching Omni branch. The workflow resolves it, refreshes its schema, runs semantic validation, then runs content validation against every dashboard labelled verified. If anything fails, the check fails and the PR is blocked.
+On a pull request, `branchPerPullRequest` has already created a matching Omni branch. The workflow resolves it, refreshes its schema, runs semantic validation, then runs content validation against every dashboard labelled verified. If anything fails, the check fails and the PR is blocked. Each `.yml` is a thin wrapper, the actual logic lives in its matching `.py` script, the same split as [omni-ai-eval](../omni-ai-eval/README.md).
 
 There are three interchangeable variants, pick one depending on what you're validating against:
 
 | Variant | Validated against | Routing |
 |---|---|---|
-| `gate-production.yml` | Production | None, the branch just inherits prod |
-| `gate-connection-env.yml` | A separate dev database or schema | A connection environment, selected by a user attribute |
-| `gate-dbt-env.yml` | Dev dbt schemas, same connection | One API call, setting the dbt environment on the branch |
+| `gate-production.yml` + `gate_production.py` | Production | None, the branch just inherits prod |
+| `gate-connection-env.yml` + `gate_connection_env.py` | A separate dev database or schema | A connection environment, selected by a user attribute |
+| `gate-dbt-env.yml` + `gate_dbt_env.py` | Dev dbt schemas, same connection | One API call, setting the dbt environment on the branch |
 
 ## Connection environment vs dbt environment
 
@@ -55,15 +55,17 @@ Add these under Settings, Secrets and variables, Actions.
 | `OMNI_VALIDATOR_USER_ID` | UUID of the user content validation is scoped to (folder access) | all three |
 | `OMNI_CONNECTION_ID` | Connection id, from the URL when editing the connection | `gate-connection-env.yml`, `gate-dbt-env.yml` |
 
+`POLL_TIMEOUT` (default 900s) and `POLL_INTERVAL` (default 10s) control how long each script waits for the schema refresh, set them as env vars in the workflow if the defaults don't suit your warehouse.
+
 ## Copying this into your repo
 
-Pick one variant and copy it to `.github/workflows/omni-pr-gate.yml` in your Omni repo, keeping only the one you chose. Make the `omni-cli-gate` job a required status check on `main`.
+Pick one variant and copy its `.yml` to `.github/workflows/omni-pr-gate.yml` and its `.py` to `.github/scripts/` in your Omni repo (e.g. `gate_production.py` to `.github/scripts/gate_production.py`), keeping only the pair you chose. Make the `omni-cli-gate` job a required status check on `main`.
 
 ## Checklist
 
 * Map the secret to `OMNI_API_TOKEN`, not `OMNI_API_KEY`, in the env block, that's what the CLI reads
-* Parse the validator JSON and fail yourself, `validate` and `content-validator-get` both exit 0 even on hard errors
-* Poll the async refresh to `COMPLETED` before validating, or you validate a stale schema
+* The scripts parse the validator JSON and fail themselves, `validate` and `content-validator-get` both exit 0 even on hard errors
+* The scripts poll the async refresh to `COMPLETED` before validating, or you'd validate a stale schema
 * Verify the route once by checking the compiled SQL, especially for `gate-connection-env.yml`, where a missing attribute gives a silent false green
 
 ## Troubleshooting

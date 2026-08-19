@@ -1,20 +1,30 @@
 name: Omni PR gate (connection environment)
 
 # One of three interchangeable variants, see the README. An Omni model PR
-# validated against a separate dev database or schema, via a connection
+# checked against a separate dev database or schema, via a connection
 # environment. Routing is not in this file: it comes from the validator
 # user's user attribute plus the connection's branch-override toggle (set
 # once, at setup, see the README). This workflow only surfaces that routing
-# and validates, it doesn't set it.
+# and validates, it doesn't set it. All the logic lives in
+# gate_connection_env.py, this file just wires up secrets and runs it.
 #
-# Commit this in your Omni repo at .github/workflows/omni-pr-gate.yml
+# Commit this in your Omni repo at .github/workflows/omni-pr-gate.yml, and
+# gate_connection_env.py at .github/scripts/gate_connection_env.py.
+#
+# Required repo secrets (Settings > Secrets and variables > Actions > Secrets):
+#   OMNI_API_KEY             Organization API key (the script reads it as OMNI_API_TOKEN)
+#   OMNI_BASE_URL            e.g. https://<your org>.omniapp.co/api
+#   OMNI_BASE_MODEL_ID       Id of the production shared model the branch forks from
+#   OMNI_CONNECTION_ID       Connection id, from the URL when editing the connection
+#   OMNI_VALIDATOR_USER_ID   Id of the user content validation is scoped to (optional,
+#                            content validation is skipped if unset)
 
 on:
   pull_request:
     branches: [main]
 
 concurrency:
-  group: omni-pr-${{ github.event.number }}
+  group: omni-change-impact-check-${{ github.event.number }}
   cancel-in-progress: true
 
 jobs:
@@ -23,12 +33,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
       - name: Install Omni CLI
         run: |
           curl -fsSL https://raw.githubusercontent.com/exploreomni/cli/main/install.sh | sh
           echo "$HOME/.omni/bin" >> "$GITHUB_PATH"
 
-      - name: Validate Omni PR branch against the dev connection environment
+      - name: Check Omni PR branch against the dev connection environment
         env:
           OMNI_API_TOKEN: ${{ secrets.OMNI_API_KEY }}
           OMNI_BASE_URL: ${{ secrets.OMNI_BASE_URL }}
@@ -38,88 +52,4 @@ jobs:
           BRANCH_NAME: ${{ github.head_ref }}
           # Cosmetic label for logs; the real routing is the user attribute, see the README.
           TARGET_ENV: "ecommerce dev"
-        run: |
-          set -euo pipefail
-
-          # --- 0. Pre-flight: confirm the branch-override toggle is on -----------
-          # There's no PATCH endpoint for this flag, it's a UI toggle. If it's off,
-          # the branch silently reads production and every PR passes.
-          echo "[info] Branch-override flag on connection $OMNI_CONNECTION_ID:"
-          OVERRIDE=$(omni connections list --format json \
-            | jq -r --arg c "$OMNI_CONNECTION_ID" \
-              '.connections[]? | select(.id==$c) | .branchConnectionEnvironmentOverridesUserAttr')
-          echo "[info] branchConnectionEnvironmentOverridesUserAttr = ${OVERRIDE:-<unknown>}"
-          if [ "$OVERRIDE" != "true" ]; then
-            echo "::warning::Branch override is not 'true', the branch may read production instead of '$TARGET_ENV'."
-          fi
-
-          # --- 1. Resolve the branchPerPullRequest branch (do not create one) ----
-          echo "[info] Resolving Omni branch '$BRANCH_NAME' off $BASE_MODEL_ID..."
-          BRANCH_MODEL_ID=$(omni models list --modelid "$BASE_MODEL_ID" --include activeBranches --format json \
-            | jq -r --arg b "$BRANCH_NAME" '.activeBranches[]? | select(.name == $b) | .id')
-          if [ -z "$BRANCH_MODEL_ID" ] || [ "$BRANCH_MODEL_ID" = "null" ]; then
-            echo "::error::No Omni branch named '$BRANCH_NAME' found. Available branches:"
-            omni models list --modelid "$BASE_MODEL_ID" --include activeBranches --format json \
-              | jq -r '.activeBranches[]?.name'
-            exit 1
-          fi
-          echo "[info] Branch model id: $BRANCH_MODEL_ID"
-
-          # --- 2. Refresh schema against the dev env (async; poll to COMPLETED) --
-          # With the override toggle on and the validator user's attribute set to
-          # the dev environment, this refresh picks up the dev schema's columns.
-          echo "[info] Refreshing schema (routing to '$TARGET_ENV' via user attribute)..."
-          REFRESH_OUT=$(omni models refresh "$BASE_MODEL_ID" --branch-id "$BRANCH_MODEL_ID" --format json)
-          echo "$REFRESH_OUT" | jq .
-          JOB_ID=$(echo "$REFRESH_OUT" | jq -r '.jobId')
-          for i in $(seq 1 60); do
-            JST=$(omni models jobs-get-status "$JOB_ID" --format json)
-            S=$(echo "$JST" | jq -r '.status')
-            echo "[info] refresh job $JOB_ID: $S"
-            case "$S" in
-              COMPLETED) break ;;
-              FAILED) echo "::error::schema refresh job failed"; echo "$JST" | jq .; exit 1 ;;
-            esac
-            if [ "$i" -eq 60 ]; then
-              echo "::error::schema refresh did not finish within timeout"
-              exit 1
-            fi
-            sleep 5
-          done
-
-          # --- 3. Semantic validation ---------------------------------------------
-          echo "[info] Running semantic model validation against '$TARGET_ENV'..."
-          VALIDATE_OUT=$(omni models validate "$BRANCH_MODEL_ID" --format json)
-          echo "$VALIDATE_OUT" | jq .
-          ERRORS=$(echo "$VALIDATE_OUT" | jq '[.[]? | select(.is_warning == false)] | length')
-          echo "[info] semantic validation: ${ERRORS} blocking issue(s)"
-          if [ "${ERRORS:-0}" -gt 0 ]; then
-            echo "::error::Semantic validation found ${ERRORS} blocking issue(s) against '$TARGET_ENV':"
-            echo "$VALIDATE_OUT" | jq -r '.[]? | select(.is_warning==false) | " - \(.yaml_path): \(.message)"'
-            exit 1
-          fi
-
-          # --- 4. Content validation: verified dashboards, user-scoped -----------
-          if [ -z "${USER_ID:-}" ] || [ "${USER_ID}" = "null" ]; then
-            echo "::warning::OMNI_VALIDATOR_USER_ID not set, skipping content validation."
-          else
-            VERIFIED_LABELS=$(omni labels list --format json \
-              | jq -r '[.labels[]? | select(.verified == true) | .name] | join(",")')
-            echo "[info] verified labels: ${VERIFIED_LABELS:-<none>}"
-            if [ -n "$VERIFIED_LABELS" ]; then
-              CONTENT_RESULT=$(omni models content-validator-get "$BASE_MODEL_ID" \
-                --branch-id "$BRANCH_MODEL_ID" --userid "$USER_ID" --labels "$VERIFIED_LABELS" --format json)
-              echo "$CONTENT_RESULT" | jq .
-              ISSUES=$(echo "$CONTENT_RESULT" \
-                | jq '[.content[]? | .queries_and_issues[]? | select((.issues|length) > 0)] | length')
-              echo "[info] content validation: ${ISSUES:-0} verified item(s) with issues"
-              if [ "${ISSUES:-0}" -gt 0 ]; then
-                echo "::error::Content validation failed: ${ISSUES} verified item(s) with issues against '$TARGET_ENV'"
-                exit 1
-              fi
-            else
-              echo "::warning::No verified labels found, nothing to content-validate."
-            fi
-          fi
-
-          echo "[ok] Gate passed (connection environment '$TARGET_ENV')."
+        run: python .github/scripts/gate_connection_env.py

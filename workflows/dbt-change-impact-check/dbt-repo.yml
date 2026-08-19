@@ -1,12 +1,37 @@
 name: dbt CI (triggers Omni dashboard gate)
 
-# dbt repo side of the dbt-triggered dashboard gate. On a dbt PR: build the
-# dev schema, mark the dbt-change-impact-check status check pending on this PR,
+# dbt repo side of the dbt change impact check. On a dbt PR: build the dev
+# schema, mark the dbt-change-impact-check status check pending on this PR,
 # then dispatch to the Omni repo, which does the actual validation and posts
 # the result back onto this PR's commit under the same status context. See
-# omni-repo.yml for the other half, which lives in your Omni repo.
+# omni-repo.yml and validate_from_dbt.py for the other half, which live in
+# your Omni repo.
 #
 # Commit this in your dbt repo at .github/workflows/dbt-ci.yml
+#
+# Required repo secrets (Settings > Secrets and variables > Actions > Secrets):
+#   OMNI_REPO_DISPATCH_TOKEN   PAT with repo scope on the Omni repo, fires the dispatch
+#   DBT_SNOWFLAKE_*            Warehouse credentials for the dbt build (account,
+#                              user, password, role); rename/replace with your
+#                              warehouse's equivalents if you're not on Snowflake
+#
+# Your `ci` target must write into the schema your Omni dbt or connection
+# environment reads, that's the join point between this file and the Omni
+# side. For example, in profiles.yml:
+#
+#   your_project:
+#     target: dev
+#     outputs:
+#       ci:
+#         type: snowflake
+#         account: "{{ env_var('DBT_SNOWFLAKE_ACCOUNT') }}"
+#         user: "{{ env_var('DBT_SNOWFLAKE_USER') }}"
+#         password: "{{ env_var('DBT_SNOWFLAKE_PASSWORD') }}"
+#         role: "{{ env_var('DBT_SNOWFLAKE_ROLE') }}"
+#         database: ANALYTICS
+#         schema: ANALYTICS_DEV
+#         warehouse: TRANSFORMING
+#         threads: 4
 
 on:
   pull_request:
@@ -15,7 +40,7 @@ on:
 # The dev schema is shared across PRs, so serialise runs rather than letting
 # two PRs clobber the same schema.
 concurrency:
-  group: dbt-omni-gate
+  group: dbt-change-impact-check-build
   cancel-in-progress: false
 
 permissions:
@@ -39,7 +64,7 @@ jobs:
         run: dbt deps
 
       # --target ci must write into the schema your Omni dbt or connection
-      # environment reads. See profiles.yml.example in this folder.
+      # environment reads, see the profiles.yml excerpt in this file's header comment.
       - name: dbt build and test into dev schema
         env:
           DBT_SNOWFLAKE_ACCOUNT: ${{ secrets.DBT_SNOWFLAKE_ACCOUNT }}
