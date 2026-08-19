@@ -1,7 +1,7 @@
 name: Omni PR gate (dbt environment)
 
 # One of three interchangeable variants, see the README. An Omni model PR
-# checked against dev dbt schemas. Unlike gate-connection-env.yml, routing
+# checked against dev dbt schemas. Unlike gate_connection_env.yml, routing
 # is explicit: one API call points the branch at a dbt environment by id
 # before the refresh. Same connection, different dbt-built schemas. All the
 # logic lives in gate_dbt_env.py, this file just wires up secrets and runs it.

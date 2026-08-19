@@ -12,13 +12,13 @@ There are three interchangeable variants, pick one depending on what you're vali
 
 | Variant | Validated against | Routing |
 |---|---|---|
-| `gate-production.yml` + `gate_production.py` | Production | None, the branch just inherits prod |
-| `gate-connection-env.yml` + `gate_connection_env.py` | A separate dev database or schema | A connection environment, selected by a user attribute |
-| `gate-dbt-env.yml` + `gate_dbt_env.py` | Dev dbt schemas, same connection | One API call, setting the dbt environment on the branch |
+| `gate_production.yml` + `gate_production.py` | Production | None, the branch just inherits prod |
+| `gate_connection_env.yml` + `gate_connection_env.py` | A separate dev database or schema | A connection environment, selected by a user attribute |
+| `gate_dbt_env.yml` + `gate_dbt_env.py` | Dev dbt schemas, same connection | One API call, setting the dbt environment on the branch |
 
 ## Connection environment vs dbt environment
 
-These sound similar but are two different switches, relevant if you're choosing between `gate-connection-env.yml` and `gate-dbt-env.yml`.
+These sound similar but are two different switches, relevant if you're choosing between `gate_connection_env.yml` and `gate_dbt_env.yml`.
 
 A connection environment swaps the database connection itself. It points Omni at a different database or schema, and optionally different credentials, and works with any warehouse. You don't choose it per run, you pin it once during setup by setting the validator user's environment user attribute, so every gated run routes to the same dev connection. Use it when your dev data lives in a separate database or schema.
 
@@ -39,9 +39,9 @@ Set these up in Omni once, before wiring up any variant:
 * A validator user with querier access or higher, and folder access to the verified dashboards you're gating
 * The dashboards you want gated are labelled verified in Omni
 
-`gate-connection-env.yml` only, enable the branch connection environment override toggle (`branchConnectionEnvironmentOverridesUserAttr`) on the connection, and give the validator user the attribute that selects the dev environment.
+`gate_connection_env.yml` only, enable the branch connection environment override toggle (`branchConnectionEnvironmentOverridesUserAttr`) on the connection, and give the validator user the attribute that selects the dev environment.
 
-`gate-dbt-env.yml` only, the dbt integration needs to be enabled and a dbt environment (for example staging) configured in Omni.
+`gate_dbt_env.yml` only, the dbt integration needs to be enabled and a dbt environment (for example staging) configured in Omni.
 
 ## Secrets
 
@@ -53,7 +53,7 @@ Add these under Settings, Secrets and variables, Actions.
 | `OMNI_BASE_URL` | Full host of your instance, e.g. `https://yourorg.exploreomni.dev` | all three |
 | `OMNI_BASE_MODEL_ID` | Id of the core production shared model the branch forks from | all three |
 | `OMNI_VALIDATOR_USER_ID` | UUID of the user content validation is scoped to (folder access) | all three |
-| `OMNI_CONNECTION_ID` | Connection id, from the URL when editing the connection | `gate-connection-env.yml`, `gate-dbt-env.yml` |
+| `OMNI_CONNECTION_ID` | Connection id, from the URL when editing the connection | `gate_connection_env.yml`, `gate_dbt_env.yml` |
 
 `POLL_TIMEOUT` (default 900s) and `POLL_INTERVAL` (default 10s) control how long each script waits for the schema refresh, set them as env vars in the workflow if the defaults don't suit your warehouse.
 
@@ -66,7 +66,7 @@ Pick one variant and copy its `.yml` to `.github/workflows/omni-pr-gate.yml` and
 * Map the secret to `OMNI_API_TOKEN`, not `OMNI_API_KEY`, in the env block, that's what the CLI reads
 * The scripts parse the validator JSON and fail themselves, `validate` and `content-validator-get` both exit 0 even on hard errors
 * The scripts poll the async refresh to `COMPLETED` before validating, or you'd validate a stale schema
-* Verify the route once by checking the compiled SQL, especially for `gate-connection-env.yml`, where a missing attribute gives a silent false green
+* Verify the route once by checking the compiled SQL, especially for `gate_connection_env.yml`, where a missing attribute gives a silent false green
 
 ## Troubleshooting
 
@@ -75,6 +75,6 @@ Pick one variant and copy its `.yml` to `.github/workflows/omni-pr-gate.yml` and
 | "No Omni branch named …" | The branch name doesn't match `github.head_ref`, or `branchPerPullRequest` is off. The error lists the real branch names. |
 | HTTP 400 on `models list` | BRANCH models aren't listable directly. Use `--modelid <base> --include activeBranches`, not `--modelkind BRANCH`. |
 | Content validation skipped | `OMNI_VALIDATOR_USER_ID` is unset, or no labels are marked verified in Omni. |
-| Every PR passes | Likely a false green, the branch is reading prod. Check the connection environment user attribute (`gate-connection-env.yml`) or the dbt environment id POST (`gate-dbt-env.yml`), and confirm the compiled SQL's `FROM` schema. |
+| Every PR passes | Likely a false green, the branch is reading prod. Check the connection environment user attribute (`gate_connection_env.yml`) or the dbt environment id POST (`gate_dbt_env.yml`), and confirm the compiled SQL's `FROM` schema. |
 | CLI auth errors | The CLI expects `OMNI_API_TOKEN` and `OMNI_BASE_URL`, this workflow maps `OMNI_API_KEY` to `OMNI_API_TOKEN` for you. |
-| Refresh runs long | Expected, it hits the warehouse. If main's schema is already current, the refresh step can be dropped (`gate-production.yml`). |
+| Refresh runs long | Expected, it hits the warehouse. If main's schema is already current, the refresh step can be dropped (`gate_production.yml`). |
