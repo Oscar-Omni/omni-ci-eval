@@ -1,6 +1,6 @@
 # omni ai eval
 
-A GitHub Actions workflow that runs an Omni AI eval on pull requests touching model YAML. This is one workflow in the [omni-ci-workflows](../README.md) collection. It's a template, it doesn't run on anything itself, its whole purpose is to be copied into your own Omni repo.
+A GitHub Actions workflow that runs an Omni AI eval on pull requests touching model YAML. This is one workflow in the [omni-ci-workflows](../../README.md) collection. It's a template, it doesn't run on anything itself, its whole purpose is to be copied into your own Omni repo.
 
 ## What it does
 

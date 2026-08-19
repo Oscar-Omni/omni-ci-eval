@@ -1,23 +1,22 @@
-name: Validate dashboards from dbt change
+name: Omni PR gate (dbt environment)
 
-# Scenario 1, Omni repo side. Triggered by the dbt repo's repository_dispatch.
-# There is no Omni PR here, so this creates an ephemeral branch, points it at
-# the dbt environment named in the payload, validates it, deletes the branch,
-# then posts success or failure back onto the dbt PR's commit. See
-# scenario-1-dbt-repo.yml for the other half, which lives in your dbt repo.
+# One of three interchangeable variants, see the README. An Omni model PR
+# validated against dev dbt schemas. Unlike gate-connection-env.yml, routing
+# is explicit: one API call points the branch at a dbt environment by id
+# before the refresh. Same connection, different dbt-built schemas.
 #
-# Commit this in your Omni repo at .github/workflows/validate-from-dbt.yml
+# Commit this in your Omni repo at .github/workflows/omni-pr-gate.yml
 
 on:
-  repository_dispatch:
-    types: [dbt-change-validation]
+  pull_request:
+    branches: [main]
 
 concurrency:
-  group: omni-validate-from-dbt
-  cancel-in-progress: false
+  group: omni-pr-${{ github.event.number }}
+  cancel-in-progress: true
 
 jobs:
-  validate:
+  omni-cli-gate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -27,33 +26,32 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/exploreomni/cli/main/install.sh | sh
           echo "$HOME/.omni/bin" >> "$GITHUB_PATH"
 
-      - name: Validate against the dbt change
-        id: validate
+      - name: Validate Omni PR branch against the dbt environment
         env:
-          # The CLI reads OMNI_API_TOKEN / OMNI_BASE_URL, not OMNI_API_KEY.
           OMNI_API_TOKEN: ${{ secrets.OMNI_API_KEY }}
           OMNI_BASE_URL: ${{ secrets.OMNI_BASE_URL }}
           BASE_MODEL_ID: ${{ secrets.OMNI_BASE_MODEL_ID }}
           OMNI_CONNECTION_ID: ${{ secrets.OMNI_CONNECTION_ID }}
           USER_ID: ${{ secrets.OMNI_VALIDATOR_USER_ID }}
-          DBT_ENV_NAME: ${{ github.event.client_payload.dbt_env }}
-          BRANCH_NAME: ci-dbt-${{ github.run_id }}
+          BRANCH_NAME: ${{ github.head_ref }}
+          # Name of the dbt environment configured in Omni, e.g. staging or dev.
+          DBT_ENV_NAME: "staging"
         run: |
           set -euo pipefail
 
-          # --- 1. Create an ephemeral branch (no Omni PR exists); clean up on exit
-          echo "[info] Creating ephemeral branch '$BRANCH_NAME' off $BASE_MODEL_ID..."
-          CREATE_OUT=$(omni models create-branch "$BASE_MODEL_ID" --name "$BRANCH_NAME" --format json)
-          BRANCH_MODEL_ID=$(echo "$CREATE_OUT" | jq -r '.model.id')
+          # --- 1. Resolve the branchPerPullRequest branch (do not create one) ----
+          echo "[info] Resolving Omni branch '$BRANCH_NAME' off $BASE_MODEL_ID..."
+          BRANCH_MODEL_ID=$(omni models list --modelid "$BASE_MODEL_ID" --include activeBranches --format json \
+            | jq -r --arg b "$BRANCH_NAME" '.activeBranches[]? | select(.name == $b) | .id')
           if [ -z "$BRANCH_MODEL_ID" ] || [ "$BRANCH_MODEL_ID" = "null" ]; then
-            echo "::error::create-branch did not return .model.id"
-            echo "$CREATE_OUT"
+            echo "::error::No Omni branch named '$BRANCH_NAME' found. Available branches:"
+            omni models list --modelid "$BASE_MODEL_ID" --include activeBranches --format json \
+              | jq -r '.activeBranches[]?.name'
             exit 1
           fi
           echo "[info] Branch model id: $BRANCH_MODEL_ID"
-          trap 'echo "[info] Cleaning up branch..."; omni models delete-branch "$BASE_MODEL_ID" "$BRANCH_NAME" || true' EXIT
 
-          # --- 2. Point the branch at the matching dbt environment ---------------
+          # --- 2. Point the branch at the dbt environment (explicit, by id) ------
           echo "[info] Resolving dbt environment '$DBT_ENV_NAME'..."
           DBT_ENV_ID=$(curl -fsS -H "Authorization: Bearer $OMNI_API_TOKEN" \
             "$OMNI_BASE_URL/api/v1/connections/$OMNI_CONNECTION_ID/dbt/environments" \
@@ -64,11 +62,12 @@ jobs:
           fi
           echo "[info] dbt environment id: $DBT_ENV_ID"
           curl -fsS -X POST \
-            -H "Authorization: Bearer $OMNI_API_TOKEN" -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $OMNI_API_TOKEN" \
+            -H "Content-Type: application/json" \
             "$OMNI_BASE_URL/api/v1/models/$BASE_MODEL_ID/branch/$BRANCH_NAME/dbt" \
             -d "{\"dbt_environment_id\":\"$DBT_ENV_ID\"}" | jq . || true
 
-          # --- 3. Refresh schema (async; poll to COMPLETED) ----------------------
+          # --- 3. Refresh schema against the dbt env (async; poll to COMPLETED) --
           echo "[info] Refreshing schema..."
           REFRESH_OUT=$(omni models refresh "$BASE_MODEL_ID" --branch-id "$BRANCH_MODEL_ID" --format json)
           echo "$REFRESH_OUT" | jq .
@@ -89,14 +88,13 @@ jobs:
           done
 
           # --- 4. Semantic validation ---------------------------------------------
-          # validate exits 0 even on hard errors, so parse the output and fail ourselves.
-          echo "[info] Running semantic model validation..."
+          echo "[info] Running semantic model validation against dbt env '$DBT_ENV_NAME'..."
           VALIDATE_OUT=$(omni models validate "$BRANCH_MODEL_ID" --format json)
           echo "$VALIDATE_OUT" | jq .
           ERRORS=$(echo "$VALIDATE_OUT" | jq '[.[]? | select(.is_warning == false)] | length')
           echo "[info] semantic validation: ${ERRORS} blocking issue(s)"
           if [ "${ERRORS:-0}" -gt 0 ]; then
-            echo "::error::Semantic validation found ${ERRORS} blocking issue(s):"
+            echo "::error::Semantic validation found ${ERRORS} blocking issue(s) against '$DBT_ENV_NAME':"
             echo "$VALIDATE_OUT" | jq -r '.[]? | select(.is_warning==false) | " - \(.yaml_path): \(.message)"'
             exit 1
           fi
@@ -116,7 +114,7 @@ jobs:
                 | jq '[.content[]? | .queries_and_issues[]? | select((.issues|length) > 0)] | length')
               echo "[info] content validation: ${ISSUES:-0} verified item(s) with issues"
               if [ "${ISSUES:-0}" -gt 0 ]; then
-                echo "::error::Content validation failed: ${ISSUES} verified item(s) with issues"
+                echo "::error::Content validation failed: ${ISSUES} verified item(s) with issues against '$DBT_ENV_NAME'"
                 exit 1
               fi
             else
@@ -124,15 +122,4 @@ jobs:
             fi
           fi
 
-          echo "[ok] Validation passed."
-
-      # --- 6. Signal the result back to the dbt PR (always runs) ----------------
-      - name: Report status back to the dbt PR
-        if: always()
-        run: |
-          STATE=${{ steps.validate.outcome == 'success' && 'success' || 'failure' }}
-          curl -fsS -X POST \
-            -H "Authorization: Bearer ${{ secrets.DBT_STATUS_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.event.client_payload.dbt_repo }}/statuses/${{ github.event.client_payload.sha }}" \
-            -d "{\"state\":\"$STATE\",\"context\":\"omni-dashboard-gate\",\"description\":\"Omni dashboard validation: $STATE\",\"target_url\":\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+          echo "[ok] Gate passed (dbt environment '$DBT_ENV_NAME')."

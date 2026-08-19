@@ -1,10 +1,10 @@
 name: dbt CI (triggers Omni dashboard gate)
 
-# Scenario 1, dbt repo side. On a dbt PR: build the dev schema, mark the
-# omni-dashboard-gate status check pending on this PR, then dispatch to the
-# Omni repo, which does the actual validation and posts the result back onto
-# this PR's commit under the same status context. See scenario-1-omni-repo.yml
-# for the other half, which lives in your Omni repo.
+# dbt repo side of the dbt-triggered dashboard gate. On a dbt PR: build the
+# dev schema, mark the omni-dashboard-gate status check pending on this PR,
+# then dispatch to the Omni repo, which does the actual validation and posts
+# the result back onto this PR's commit under the same status context. See
+# omni-repo.yml for the other half, which lives in your Omni repo.
 #
 # Commit this in your dbt repo at .github/workflows/dbt-ci.yml
 
