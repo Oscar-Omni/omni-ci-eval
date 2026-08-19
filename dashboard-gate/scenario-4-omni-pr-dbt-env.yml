@@ -1,0 +1,125 @@
+name: Omni PR gate (dbt environment)
+
+# Scenario 4: an Omni model PR validated against dev dbt schemas. Unlike
+# scenario 3, routing is explicit: one API call points the branch at a dbt
+# environment by id before the refresh. Same connection, different
+# dbt-built schemas.
+#
+# Commit this in your Omni repo at .github/workflows/omni-pr-gate.yml
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: omni-pr-${{ github.event.number }}
+  cancel-in-progress: true
+
+jobs:
+  omni-cli-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Omni CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/exploreomni/cli/main/install.sh | sh
+          echo "$HOME/.omni/bin" >> "$GITHUB_PATH"
+
+      - name: Validate Omni PR branch against the dbt environment
+        env:
+          OMNI_API_TOKEN: ${{ secrets.OMNI_API_KEY }}
+          OMNI_BASE_URL: ${{ secrets.OMNI_BASE_URL }}
+          BASE_MODEL_ID: ${{ secrets.OMNI_BASE_MODEL_ID }}
+          OMNI_CONNECTION_ID: ${{ secrets.OMNI_CONNECTION_ID }}
+          USER_ID: ${{ secrets.OMNI_VALIDATOR_USER_ID }}
+          BRANCH_NAME: ${{ github.head_ref }}
+          # Name of the dbt environment configured in Omni, e.g. staging or dev.
+          DBT_ENV_NAME: "staging"
+        run: |
+          set -euo pipefail
+
+          # --- 1. Resolve the branchPerPullRequest branch (do not create one) ----
+          echo "[info] Resolving Omni branch '$BRANCH_NAME' off $BASE_MODEL_ID..."
+          BRANCH_MODEL_ID=$(omni models list --modelid "$BASE_MODEL_ID" --include activeBranches --format json \
+            | jq -r --arg b "$BRANCH_NAME" '.activeBranches[]? | select(.name == $b) | .id')
+          if [ -z "$BRANCH_MODEL_ID" ] || [ "$BRANCH_MODEL_ID" = "null" ]; then
+            echo "::error::No Omni branch named '$BRANCH_NAME' found. Available branches:"
+            omni models list --modelid "$BASE_MODEL_ID" --include activeBranches --format json \
+              | jq -r '.activeBranches[]?.name'
+            exit 1
+          fi
+          echo "[info] Branch model id: $BRANCH_MODEL_ID"
+
+          # --- 2. Point the branch at the dbt environment (explicit, by id) ------
+          echo "[info] Resolving dbt environment '$DBT_ENV_NAME'..."
+          DBT_ENV_ID=$(curl -fsS -H "Authorization: Bearer $OMNI_API_TOKEN" \
+            "$OMNI_BASE_URL/api/v1/connections/$OMNI_CONNECTION_ID/dbt/environments" \
+            | jq -r --arg n "$DBT_ENV_NAME" '.[]? | select(.name==$n) | .id')
+          if [ -z "$DBT_ENV_ID" ] || [ "$DBT_ENV_ID" = "null" ]; then
+            echo "::error::dbt environment '$DBT_ENV_NAME' not found on connection $OMNI_CONNECTION_ID"
+            exit 1
+          fi
+          echo "[info] dbt environment id: $DBT_ENV_ID"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $OMNI_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            "$OMNI_BASE_URL/api/v1/models/$BASE_MODEL_ID/branch/$BRANCH_NAME/dbt" \
+            -d "{\"dbt_environment_id\":\"$DBT_ENV_ID\"}" | jq . || true
+
+          # --- 3. Refresh schema against the dbt env (async; poll to COMPLETED) --
+          echo "[info] Refreshing schema..."
+          REFRESH_OUT=$(omni models refresh "$BASE_MODEL_ID" --branch-id "$BRANCH_MODEL_ID" --format json)
+          echo "$REFRESH_OUT" | jq .
+          JOB_ID=$(echo "$REFRESH_OUT" | jq -r '.jobId')
+          for i in $(seq 1 60); do
+            JST=$(omni models jobs-get-status "$JOB_ID" --format json)
+            S=$(echo "$JST" | jq -r '.status')
+            echo "[info] refresh job $JOB_ID: $S"
+            case "$S" in
+              COMPLETED) break ;;
+              FAILED) echo "::error::schema refresh job failed"; echo "$JST" | jq .; exit 1 ;;
+            esac
+            if [ "$i" -eq 60 ]; then
+              echo "::error::schema refresh did not finish within timeout"
+              exit 1
+            fi
+            sleep 5
+          done
+
+          # --- 4. Semantic validation ---------------------------------------------
+          echo "[info] Running semantic model validation against dbt env '$DBT_ENV_NAME'..."
+          VALIDATE_OUT=$(omni models validate "$BRANCH_MODEL_ID" --format json)
+          echo "$VALIDATE_OUT" | jq .
+          ERRORS=$(echo "$VALIDATE_OUT" | jq '[.[]? | select(.is_warning == false)] | length')
+          echo "[info] semantic validation: ${ERRORS} blocking issue(s)"
+          if [ "${ERRORS:-0}" -gt 0 ]; then
+            echo "::error::Semantic validation found ${ERRORS} blocking issue(s) against '$DBT_ENV_NAME':"
+            echo "$VALIDATE_OUT" | jq -r '.[]? | select(.is_warning==false) | " - \(.yaml_path): \(.message)"'
+            exit 1
+          fi
+
+          # --- 5. Content validation: verified dashboards, user-scoped -----------
+          if [ -z "${USER_ID:-}" ] || [ "${USER_ID}" = "null" ]; then
+            echo "::warning::OMNI_VALIDATOR_USER_ID not set, skipping content validation."
+          else
+            VERIFIED_LABELS=$(omni labels list --format json \
+              | jq -r '[.labels[]? | select(.verified == true) | .name] | join(",")')
+            echo "[info] verified labels: ${VERIFIED_LABELS:-<none>}"
+            if [ -n "$VERIFIED_LABELS" ]; then
+              CONTENT_RESULT=$(omni models content-validator-get "$BASE_MODEL_ID" \
+                --branch-id "$BRANCH_MODEL_ID" --userid "$USER_ID" --labels "$VERIFIED_LABELS" --format json)
+              echo "$CONTENT_RESULT" | jq .
+              ISSUES=$(echo "$CONTENT_RESULT" \
+                | jq '[.content[]? | .queries_and_issues[]? | select((.issues|length) > 0)] | length')
+              echo "[info] content validation: ${ISSUES:-0} verified item(s) with issues"
+              if [ "${ISSUES:-0}" -gt 0 ]; then
+                echo "::error::Content validation failed: ${ISSUES} verified item(s) with issues against '$DBT_ENV_NAME'"
+                exit 1
+              fi
+            else
+              echo "::warning::No verified labels found, nothing to content-validate."
+            fi
+          fi
+
+          echo "[ok] Gate passed (dbt environment '$DBT_ENV_NAME')."
